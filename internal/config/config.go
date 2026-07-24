@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -47,9 +48,20 @@ func LoadWorkspace(path string) (Workspace, error) {
 }
 
 // ProfileDir resolves the user-local profile directory.
+//
+// XDG_CONFIG_HOME wins on every platform when set. Otherwise Windows uses the
+// OS-native config root (%AppData%) via os.UserConfigDir, while Unix-likes keep
+// the ~/.config convention.
 func ProfileDir() (string, error) {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "linear-scout"), nil
+	}
+	if runtime.GOOS == "windows" {
+		cfg, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve config dir: %w", err)
+		}
+		return filepath.Join(cfg, "linear-scout"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

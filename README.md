@@ -29,7 +29,8 @@ Requires Go 1.22+.
    ```
 
    This creates the user-local profile directory
-   (`$XDG_CONFIG_HOME/linear-scout/`, or `~/.config/linear-scout/`) with a
+   (`$XDG_CONFIG_HOME/linear-scout/`, or `~/.config/linear-scout/` on
+   macOS/Linux and `%AppData%\linear-scout\` on Windows) with a
    `profile.yaml`, and a shared `linear-scout.yaml` in the current directory.
 
 2. **Add your secrets** to `profile.yaml` (this file, and only this file, holds
