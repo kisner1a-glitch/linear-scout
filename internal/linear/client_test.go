@@ -3,6 +3,7 @@ package linear
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -106,5 +107,97 @@ func TestProjectNamesPaginates(t *testing.T) {
 	}
 	if names["p1"] != "Core" || names["p2"] != "Mobile" {
 		t.Fatalf("bad project names across pages: %+v", names)
+	}
+}
+
+// TestPaginationAggregatesAcrossPages is the table-driven multi-page check
+// CHA-2400 asks for. Issues and ProjectNames each had their own pagination
+// test; Comments had none, so a regression there — the query is capped at
+// first: 100 — would have silently truncated ingestion on any workspace with
+// more than 100 comments in the window, with no test to catch it.
+//
+// Each case drives three pages so an off-by-one that stops after the second
+// still fails, and asserts the cursor chain, not just the total count: a
+// client that refetched page 1 twice would otherwise produce a plausible
+// aggregate from the wrong data.
+func TestPaginationAggregatesAcrossPages(t *testing.T) {
+	cases := []struct {
+		name      string
+		field     string
+		nodes     [3]string
+		wantCount int
+		fetch     func(*Client) (int, error)
+	}{
+		{
+			name:  "issues",
+			field: "issues",
+			nodes: [3]string{
+				`{"id":"i1","identifier":"ENG-1"},{"id":"i2","identifier":"ENG-2"}`,
+				`{"id":"i3","identifier":"ENG-3"}`,
+				`{"id":"i4","identifier":"ENG-4"},{"id":"i5","identifier":"ENG-5"}`,
+			},
+			wantCount: 5,
+			fetch: func(c *Client) (int, error) {
+				got, err := c.Issues(context.Background(), time.Now().Add(-time.Hour))
+				return len(got), err
+			},
+		},
+		{
+			name:  "comments",
+			field: "comments",
+			nodes: [3]string{
+				`{"id":"c1","body":"one","issue":{"id":"i1"}},{"id":"c2","body":"two","issue":{"id":"i1"}}`,
+				`{"id":"c3","body":"three","issue":{"id":"i2"}}`,
+				`{"id":"c4","body":"four","issue":{"id":"i3"}}`,
+			},
+			wantCount: 4,
+			fetch: func(c *Client) (int, error) {
+				got, err := c.Comments(context.Background(), time.Now().Add(-time.Hour))
+				return len(got), err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cursors []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var req struct {
+					Variables map[string]any `json:"variables"`
+				}
+				json.Unmarshal(body, &req)
+				after, _ := req.Variables["after"].(string)
+				cursors = append(cursors, after)
+
+				w.Header().Set("Content-Type", "application/json")
+				switch after {
+				case "":
+					fmt.Fprintf(w, `{"data":{"%s":{"nodes":[%s],"pageInfo":{"hasNextPage":true,"endCursor":"C1"}}}}`, tc.field, tc.nodes[0])
+				case "C1":
+					fmt.Fprintf(w, `{"data":{"%s":{"nodes":[%s],"pageInfo":{"hasNextPage":true,"endCursor":"C2"}}}}`, tc.field, tc.nodes[1])
+				default:
+					fmt.Fprintf(w, `{"data":{"%s":{"nodes":[%s],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}`, tc.field, tc.nodes[2])
+				}
+			}))
+			defer srv.Close()
+
+			got, err := tc.fetch(New(srv.URL, "lin_test", srv.Client()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.wantCount {
+				t.Fatalf("want %d records aggregated across 3 pages, got %d", tc.wantCount, got)
+			}
+			want := []string{"", "C1", "C2"}
+			if len(cursors) != len(want) {
+				t.Fatalf("want %d requests (one per page), got %d: %q", len(want), len(cursors), cursors)
+			}
+			for i := range want {
+				if cursors[i] != want[i] {
+					t.Fatalf("request %d sent after=%q, want %q (cursor chain broken)", i+1, cursors[i], want[i])
+				}
+			}
+		})
 	}
 }
