@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -23,14 +24,42 @@ func TestLoadWorkspaceDefaults(t *testing.T) {
 }
 
 func TestProfileDirRespectsXDG(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgtest")
+	root := filepath.Join(t.TempDir(), "xdgtest")
+	t.Setenv("XDG_CONFIG_HOME", root)
 	got, err := ProfileDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join("/tmp/xdgtest", "linear-scout")
-if got != want {
-    t.Fatalf("ProfileDir=%q, want %q", got, want)
+	// Compare against a filepath.Join-built path so the assertion holds on
+	// Windows (backslash separators) as well as Unix.
+	if want := filepath.Join(root, "linear-scout"); got != want {
+		t.Fatalf("ProfileDir=%q want %q", got, want)
+	}
+}
+
+func TestProfileDirFallsBackToOSConfigRoot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	got, err := ProfileDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var want string
+	if runtime.GOOS == "windows" {
+		cfg, err := os.UserConfigDir()
+		if err != nil {
+			t.Skipf("no OS config dir available: %v", err)
+		}
+		want = filepath.Join(cfg, "linear-scout")
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("no home dir available: %v", err)
+		}
+		want = filepath.Join(home, ".config", "linear-scout")
+	}
+	if got != want {
+		t.Fatalf("ProfileDir=%q want %q", got, want)
 	}
 }
 
